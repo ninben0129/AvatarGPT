@@ -1,0 +1,143 @@
+AvatarGPT 環境構築・トラブルシューティングガイド (WSL2/Linux向け)
+本リポジトリのコードを動作させるために行った環境構築の手順と、発生したエラーへの対処法をまとめました。特にWSL2環境でのGPU動作、Transformersのバージョン不整合、レンダリング周りの権限設定について記述しています。
+
+1. Conda環境の作成
+Python 3.8を使用します。
+
+Bash
+
+conda create -n UDE-env python=3.8
+conda activate UDE-env
+2. 依存ライブラリのインストール
+requirements.txt は使用せず、以下の手順で手動インストールすることを推奨します（依存関係の衝突を避けるため）。
+
+2.1 PyTorch (CUDA 11.3対応版)
+デフォルトの pip install torch ではCPU版が入ったり、バージョンが合わないため、URLを指定してインストールします。
+
+Bash
+
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+2.2 推論・メッシュ変換に必要なライブラリ
+Transformersはバージョンが新しすぎるとエラーになるため、4.15.0 を指定します。また、SMPLモデルや数値計算に必要なライブラリを一括で入れます。
+
+Bash
+
+# Transformersのバージョン固定
+pip install transformers==4.15.0 protobuf==3.20.3
+
+# 数値計算・画像処理・SMPL関連
+pip install "numpy<2" scipy pyyaml tqdm tensorboard matplotlib Pillow
+pip install smplx chumpy trimesh librosa av imageio imageio-ffmpeg easydict einops ftfy scikit-learn h5py
+
+# レンダリング用
+pip install pyrender pyopengl
+3. コードの修正 (Transformers互換性)
+transformers==4.15.0 を使用しても、コード内で bad_word_ids=None を明示的に渡している箇所でエラーが発生します。
+
+エラー内容: TypeError: forward() got an unexpected keyword argument 'bad_word_ids'
+
+修正対象: networks/llm/t5_model.py
+
+以下の関数内にある bad_word_ids=None という引数をすべて削除（またはコメントアウト）してください。
+
+generate_planning
+
+generate_text_to_motion
+
+generate_motion_to_text
+
+generate_motion_to_motion
+
+修正例:
+
+Python
+
+# 修正前
+outputs = self.llm_model.generate(
+    ...,
+    bad_word_ids=None,  # <--- これを削除
+    top_k=topk
+)
+
+# 修正後
+outputs = self.llm_model.generate(
+    ...,
+    # bad_word_ids=None,
+    top_k=topk
+)
+4. システム設定 (WSL2特有の対処)
+4.1 ライブラリパスの設定 (LD_LIBRARY_PATH)
+PyTorch内のcuDNNライブラリなどをシステムに認識させる必要があります。
+
+Bash
+
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python3.8/site-packages/torch/lib:$LD_LIBRARY_PATH
+(※毎回入力するのが手間な場合、 conda env config vars set LD_LIBRARY_PATH=... で固定化を推奨)
+
+4.2 libcuda.so のシンボリックリンク作成
+WSL2ではGPUドライバが特殊な場所にあるため、そのままでは libcuda.so が見つからずエラーになります。
+
+エラー内容: Error: libcuda.so: cannot open shared object file: No such file or directory
+
+対処法:
+
+Bash
+
+# /usr/lib/wsl/lib/libcuda.so.1 へのリンクを作成
+ln -s /usr/lib/wsl/lib/libcuda.so.1 $CONDA_PREFIX/lib/libcuda.so
+4.3 レンダリングデバイスの権限設定
+pyrender (OpenGL) 使用時に権限エラーが発生する場合の対処です。
+
+エラー内容: libEGL warning: failed to open /dev/dri/renderD128: Permission denied
+
+対処法:
+
+Bash
+
+sudo chmod 666 /dev/dri/renderD128
+sudo chmod 666 /dev/dri/card0
+5. 実行コマンド例
+Step 1: 推論 (Text to Motion)
+Bash
+
+python scripts/evaluate.py \
+    --task AvatarGPTEvaluator \
+    --config configs/llm_t5/config_t5_large.yaml \
+    --eval_folder demo_outputs \
+    --eval_name demo \
+    --repeat_times 1 \
+    --eval_mode se1 \
+    --eval_pipeline p0 \
+    --topk 1 \
+    --use_semantic_sampling True \
+    --temperature 1.0 \
+    --demo_list demo_inputs/test.txt \
+    --demo_data demo_inputs/samples
+Step 2: メッシュ変換 (Motion to Mesh)
+Bash
+
+python render/convert_hml_to_mesh.py \
+    --filedir demo_outputs/demo/output/se1_p0/ \
+    --mesh_dir demo_outputs/demo/meshes/se1_p0/ \
+    --video_dir demo_outputs/demo/videos/se1_p0/ \
+    --visualize False \
+    --convert_gt False
+Step 3: 動画レンダリング (Mesh to Video)
+Bash
+
+python render/mesh_renderer.py \
+    --mesh_dir demo_outputs/demo/meshes/se1_p0/ \
+    --video_dir demo_outputs/demo/videos/se1_p0/ \
+    --run_mode dynamic
+
+
+
+#トラブルを防ぐために毎回実行
+# 1. 環境を有効化する
+conda activate UDE-env
+
+# 2. ライブラリのパスを通す (最重要)
+export LD_LIBRARY_PATH=/home/tohok/miniconda3/envs/UDE-env/lib:/home/tohok/miniconda3/envs/UDE-env/lib/python3.8/site-packages/torch/lib:$LD_LIBRARY_PATH
+
+これを実行すれば自動化できる
+conda env config vars set LD_LIBRARY_PATH="/home/tohok/miniconda3/envs/UDE-env/lib:/home/tohok/miniconda3/envs/UDE-env/lib/python3.8/site-packages/torch/lib:$LD_LIBRARY_PATH"
