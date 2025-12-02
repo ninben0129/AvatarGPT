@@ -23,6 +23,20 @@ from modules.training_utils import *
 from modules.generation_utils import *
 from networks.roma.utils import rotvec_slerp
 
+# ==========================================
+# [USER CONFIG] 生成設定
+# ==========================================
+# 生成するタスク（モーションの塊）の総数。これを減らすと動画全体の時間が短くなります。
+# デフォルト: 15 -> 推奨: 1 (単発動作) 〜 3 (短い連鎖)
+MAX_TASK_LOOPS = 15
+
+# 1つのタスクをいくつのステップに分解するか。
+# LLMが "1. ..., 2. ..." と生成する箇所の最大読み取り数です。
+# デフォルト: 5 -> 推奨: 5 (そのまま) または 1 (単純化)
+MAX_STEPS_PARSE = 5
+# ==========================================
+
+
 class AvatarGPTEvaluator(object):
     def __init__(self, args, opt):
         self.opt = opt
@@ -774,7 +788,7 @@ class AvatarGPTEvaluator(object):
         token_segments = []
         text_descriptions = []
         # Generate task descriptions and corresponding token sequence
-        while len(token_segments) < 15: # Conduct 3 rounds of planning
+        while len(token_segments) < MAX_TASK_LOOPS: # Conduct 3 rounds of planning
             # Scene-Task-to-Task
             inp_batch = {"scene": [scene], "cur_task": [task]}
             output_task = self.models["gpt"].generate_planning(
@@ -788,7 +802,7 @@ class AvatarGPTEvaluator(object):
                 max_num_tokens=256, temperature=temperature)
             self.logger.info("[Decision Making] task: {:s} | generated steps: {:s}".format(output_task, output_steps))
             steps = []
-            for i in range(5, 0, -1):
+            for i in range(MAX_STEPS_PARSE, 0, -1):
                 try:
                     steps.append(output_steps.split("{:d}. ".format(i))[1])
                     output_steps = output_steps.split("{:d}. ".format(i))[0]
