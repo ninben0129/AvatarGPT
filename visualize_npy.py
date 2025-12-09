@@ -9,22 +9,10 @@ from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import data_loaders.humanml.utils.paramUtil as paramUtil
 
 def visualize_npy(args):
-    # ---------------------------------------------------------
-    # 1. 統計情報のロード (Mean/Std)
-    # ---------------------------------------------------------
-    mean_path = os.path.join(args.stat_path, 'Mean.npy')
-    std_path = os.path.join(args.stat_path, 'Std.npy')
+    print(f"--- Visualization Script (Raw Mode) ---")
     
-    print(f"Loading stats from: {args.stat_path}")
-    try:
-        mean = torch.from_numpy(np.load(mean_path)).float()
-        std = torch.from_numpy(np.load(std_path)).float()
-    except Exception as e:
-        print(f"Error loading stats: {e}")
-        return
-
     # ---------------------------------------------------------
-    # 2. AvatarGPTのモーションデータをロード
+    # 1. AvatarGPTのモーションデータをロード
     # ---------------------------------------------------------
     print(f"Loading motion from: {args.input_path}")
     try:
@@ -38,13 +26,13 @@ def visualize_npy(args):
     print(f"  -> Keys found in NPY: {list(raw_data.keys())}")
 
     # ---------------------------------------------------------
-    # 3. データの抽出 (pred -> body)
+    # 2. データの抽出 logic (pred -> body)
     # ---------------------------------------------------------
-    # 指示通り 'pred' を優先的に使用します
+    # 'pred' キーを優先的に探索
     if 'pred' in raw_data:
         pred_content = raw_data['pred']
         
-        # predが辞書で、かつbodyを持っている場合
+        # predが辞書で、かつbodyを持っている場合 (確認済みの構造)
         if isinstance(pred_content, dict) and 'body' in pred_content:
             print("  -> Found structure: ['pred']['body']")
             motion_data = pred_content['body']
@@ -54,29 +42,33 @@ def visualize_npy(args):
              print("  -> Found structure: ['pred'] (direct array)")
              motion_data = pred_content
     
-    # 見つからない場合のフォールバック (一応残しておきます)
+    # 'gt' (正解データ) を可視化したい場合のフォールバック
+    elif 'gt' in raw_data:
+        print("  -> 'pred' not found. Using 'gt'.")
+        if isinstance(raw_data['gt'], dict) and 'body' in raw_data['gt']:
+            motion_data = raw_data['gt']['body']
+        else:
+            motion_data = raw_data['gt']
+
     if motion_data is None:
-        print("  -> 'pred' not found or invalid. Searching other keys...")
-        for key in ['motion', 'joints', 'gt']:
+        # その他のキーを探索
+        for key in ['motion', 'joints']:
             if key in raw_data:
                 print(f"  -> Fallback: Using key '{key}'")
-                if isinstance(raw_data[key], dict) and 'body' in raw_data[key]:
-                    motion_data = raw_data[key]['body']
-                else:
-                    motion_data = raw_data[key]
+                motion_data = raw_data[key]
                 break
 
     if motion_data is None:
-        raise ValueError("Could not find motion array (checked ['pred']['body'] etc).")
+        raise ValueError("Could not find motion array in the file.")
 
     # ---------------------------------------------------------
-    # 4. 前処理 (型変換・シェイプ調整)
+    # 3. 前処理 (型変換・シェイプ調整)
     # ---------------------------------------------------------
     try:
         # 強制的にfloat32配列へ変換
         motion_data = np.array(motion_data, dtype=np.float32)
     except:
-        # 配列の次元が不揃い(ragged)な場合の救済
+        # ragged nested sequences対策
         motion_data = np.array(motion_data[0], dtype=np.float32)
 
     motion_tensor = torch.from_numpy(motion_data).float()
@@ -93,58 +85,46 @@ def visualize_npy(args):
         motion_tensor = motion_tensor.permute(0, 2, 1)
 
     # ---------------------------------------------------------
-    # 5. 逆正規化 (Un-normalization)
+    # 4. 特徴量 -> XYZ座標変換
     # ---------------------------------------------------------
-    # データの数値範囲を確認
-    data_min = motion_tensor.min().item()
-    data_max = motion_tensor.max().item()
-    print(f"  -> Data Stats | Min: {data_min:.4f}, Max: {data_max:.4f}, Mean: {motion_tensor.abs().mean().item():.4f}")
-
-    # 通常、正規化されたデータは小さい値(-5~5程度)です。
-    # もし値が非常に大きい場合は既に正規化が解除されている可能性があります。
-    if abs(data_max) > 10.0 or abs(data_min) > 10.0:
-        print("  -> WARNING: Data values seem large. Skipping un-normalization.")
-    else:
-        print("  -> Applying un-normalization (X * Std + Mean)...")
-        motion_tensor = motion_tensor.to(std.device) * std + mean
-
-    # ---------------------------------------------------------
-    # 6. 特徴量 -> XYZ座標変換
-    # ---------------------------------------------------------
-    print("Recovering XYZ coordinates from RIC features...")
+    # ※ここで逆正規化(Un-normalization)は行いません (Rawデータのため)
+    print("Recovering XYZ coordinates from RIC features (Skipping normalization)...")
+    
     n_joints = 22 # HumanML3D standard
     
     # recover_from_ric は (Batch, Length, 263) を受け取ります
-    # 出力は (Batch, Length, Joints, 3)
-    xyz_motion = recover_from_ric(motion_tensor, n_joints)
-    
-    # バッチの0番目を取得 -> (Length, Joints, 3)
-    xyz_motion = xyz_motion[0].numpy()
-    
-    frames_len = xyz_motion.shape[0]
-    print(f"  -> Final XYZ Motion Shape: {xyz_motion.shape} (Frames: {frames_len})")
-
-    # ---------------------------------------------------------
-    # 7. 動画保存
-    # ---------------------------------------------------------
-    skeleton = paramUtil.t2m_kinematic_chain
-    save_path = args.input_path.replace('.npy', '.mp4')
-    
-    print(f"Saving animation to: {save_path}")
-    
-    # タイトルを空にして余計なテキストを排除
-    # fps=20 はHumanML3Dの標準
     try:
+        xyz_motion = recover_from_ric(motion_tensor, n_joints)
+        
+        # バッチの0番目を取得 -> (Length, Joints, 3)
+        xyz_motion = xyz_motion[0].numpy()
+        
+        frames_len = xyz_motion.shape[0]
+        print(f"  -> Final XYZ Motion Shape: {xyz_motion.shape} (Frames: {frames_len})")
+
+        # ---------------------------------------------------------
+        # 5. 動画保存
+        # ---------------------------------------------------------
+        skeleton = paramUtil.t2m_kinematic_chain
+        save_path = args.input_path.replace('.npy', '.mp4')
+        
+        print(f"Saving animation to: {save_path}")
+        
+        # dataset='humanml' を指定してプロット
         plot_3d_motion(save_path, skeleton, xyz_motion, 
                        dataset='humanml', title="", fps=20)
         print("Done.")
+        
     except Exception as e:
-        print(f"Error during plotting: {e}")
+        print(f"Error during processing/plotting: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str, required=True, help="Path to the input .npy file")
-    parser.add_argument("--stat_path", type=str, default='dataset/humanml', help="Path to Mean.npy/Std.npy directory")
+    # stat_path は不要になったため削除しましたが、互換性のために残す場合は以下のようにします
+    # parser.add_argument("--stat_path", type=str, default='dataset/humanml', help="Unused in Raw mode")
     args = parser.parse_args()
 
     visualize_npy(args)
