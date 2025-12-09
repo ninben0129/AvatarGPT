@@ -12,4 +12,6 @@ python scripts/evaluate.py \
     --demo_list demo_inputs/my_test_list.txt \
     --demo_data demo_inputs/samples
 
-python check_npy_shape.py --file demo_outputs/demo/output/se1_p0/B0001_T0000.npy
+python check_npy_shape.py --file demo_outputs/demo/output/se1_p0/B0002_T0000.npy
+
+python visualize_npy.py --input_path demo_outputs/demo/output/se1_p0

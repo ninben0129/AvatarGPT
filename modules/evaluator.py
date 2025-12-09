@@ -34,6 +34,15 @@ MAX_TASK_LOOPS = 1
 # LLMが "1. ..., 2. ..." と生成する箇所の最大読み取り数です。
 # デフォルト: 5 -> 推奨: 5 (そのまま) または 1 (単純化)
 MAX_STEPS_PARSE = 5
+# --- [追加] 120フレーム(6秒)固定トリミング設定 ---
+# Trueにすると、生成された中から条件に合うものを1つ選び、120フレームにカットして出力します
+ENABLE_FIXED_DURATION_TRIM = True
+
+# ターゲットフレーム数 (20FPS * 6s = 120 frames)
+TARGET_FRAMES = 120
+
+# VQ-VAEのダウンサンプリングレート (通常は4)
+VQ_DOWNSAMPLE_RATE = 4
 # ==========================================
 
 
@@ -510,28 +519,59 @@ class AvatarGPTEvaluator(object):
         text_descriptions = load_scene_information_decompose(
             input_path=self.args.demo_data, 
             split_file=self.args.demo_list)
-        # random.shuffle(text_descriptions)
+        
         cat_name = "t2m" if "t2m" in self.opt["models"]["vqvae"].keys() else "all"
         for batch_id, batch in enumerate(text_descriptions):            
             results = []
             for tid in range(self.args.repeat_times):
                 self.logger.info("[{:d}/{:d}] Generated {:s}".format(batch_id+1, len(text_descriptions), "=" * 50))
+                
+                # パイプライン処理 (トークン生成)
                 if self.args.eval_pipeline == "p0":
                     scene, token_segments, action_descriptions = self.generate_scenario_one_pipeline_zero(batch=batch, temperature=1.0)
-                if self.args.eval_pipeline == "p1":
-                    pass
-                elif self.args.eval_pipeline == "p2":
-                    pass
-                elif self.args.eval_pipeline == "p3":
-                    pass
-                elif self.args.eval_pipeline == "p4":
-                    pass
+                # ... (他のパイプラインは省略) ...
+
+                # =========================================================================
+                # [修正版] 1. 特定セグメントの抽出とトリミング
+                # 最終出力を完全に120フレームにするため、選んだセグメント以外は破棄します
+                # =========================================================================
+                if ENABLE_FIXED_DURATION_TRIM:
+                    target_token_len = TARGET_FRAMES // VQ_DOWNSAMPLE_RATE  # 30 tokens
+                    
+                    # 120フレームを超えるセグメントのインデックスを全て探す
+                    long_segment_indices = [
+                        i for i, seg in enumerate(token_segments) 
+                        if seg.size(1) > target_token_len
+                    ]
+                    
+                    if len(long_segment_indices) > 0:
+                        # 条件を満たすものからランダムに1つ選択
+                        target_idx = random.choice(long_segment_indices)
+                        selected_seg = token_segments[target_idx]
+                        
+                        self.logger.info(f"[Trim] Segment {target_idx} (len={selected_seg.size(1)}) selected. Trimming to {target_token_len} tokens.")
+                        
+                        # 120フレーム(30トークン)にトリミング
+                        trimmed_seg = selected_seg[:, :target_token_len]
+                        
+                        # 【重要】リストをこの1つのセグメントのみに置き換える
+                        # これにより、後続のmerge処理で補完が入らず、このセグメントだけが出力される
+                        token_segments = [trimmed_seg]
+                        
+                        # アクション記述も対応するもの1つだけに絞る（ログ/保存用）
+                        if len(action_descriptions) > target_idx:
+                            action_descriptions = [action_descriptions[target_idx]]
+                    else:
+                        self.logger.info("[Trim] No segment > 120 frames found. Keeping original sequence.")
+                # =========================================================================
 
                 # Generate the motion tokens in between
+                # token_segmentsが1つだけの場合、ここは空リスト [] を返します（補完なし）
                 self.logger.info("Generate the motion tokens in between segments")
                 interp_token_segments = self.__merge_token_segments(token_segments=token_segments)
                 
                 # Combine the motion tokens
+                # token_segmentsが1つだけの場合、そのセグメントがそのまま返ります
                 self.logger.info("Combine motion tokens")
                 combined_tokens = self.__combine_token_segments(token_segments=token_segments, interp_token_segments=interp_token_segments)
 
@@ -540,23 +580,20 @@ class AvatarGPTEvaluator(object):
                 pred_motion = self.__decode_motion(input_tokens=combined_tokens, cat_name=cat_name)
                 pred_motion = apply_inverse_transform(pred_motion, data_obj=self.eval_dataset)
 
-                # Generate color labels of predicted motion sequence (visualization only)
-                start_i = 0
-                color_labels = np.ones((pred_motion.size(1),))
-                for i in range(len(interp_token_segments)):
-                    start_i += token_segments[i].size(-1) * 4       # Update the start_index to current position
-                    end_i = start_i + interp_token_segments[i].size(-1) * 4
-                    color_labels[start_i:end_i] = 0
-                    start_i = end_i                                 # Update the end_index
-                                
+                # Generate color labels
+                # 単一セグメントになるため、全て '0' (生成部分) または '1' で埋められます
+                color_labels = np.zeros((pred_motion.size(1),)) 
+
                 output = {
                     "gt": {"body": pred_motion.permute(0, 2, 1).data.cpu().numpy()}, 
                     "pred": {"body": pred_motion.permute(0, 2, 1).data.cpu().numpy()}, 
-                    "caption": [scene], 
+                    "caption": [scene],
+                    "scene": scene,         # [変更] npy辞書内にsceneテキストを保存
                     "actions": action_descriptions, 
                     "color_labels": color_labels
                 }
                 results.append(output)
+            
             save_generation_results(results=results, output_path=self.output_dir, batch_id=batch_id, 
                                     modality="se1_{:s}".format(self.args.eval_pipeline))
 

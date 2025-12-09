@@ -1,5 +1,6 @@
 import os
 import argparse
+import glob
 import numpy as np
 import torch
 
@@ -8,22 +9,25 @@ from data_loaders.humanml.scripts.motion_process import recover_from_ric
 from data_loaders.humanml.utils.plot_script import plot_3d_motion
 import data_loaders.humanml.utils.paramUtil as paramUtil
 
-def visualize_npy(args):
-    print(f"--- Visualization Script (Raw Mode) ---")
+def process_single_file(file_path):
+    """
+    単一のnpyファイルを処理してmp4を保存する関数
+    元の visualize_npy のロジックをここに移動
+    """
+    print(f"\nProcessing: {file_path}")
     
     # ---------------------------------------------------------
     # 1. AvatarGPTのモーションデータをロード
     # ---------------------------------------------------------
-    print(f"Loading motion from: {args.input_path}")
     try:
         # 辞書としてロード
-        raw_data = np.load(args.input_path, allow_pickle=True).item()
+        raw_data = np.load(file_path, allow_pickle=True).item()
     except Exception as e:
-        print(f"Error loading npy file: {e}")
+        print(f"Error loading npy file ({file_path}): {e}")
         return
 
     motion_data = None
-    print(f"  -> Keys found in NPY: {list(raw_data.keys())}")
+    # print(f"  -> Keys found in NPY: {list(raw_data.keys())}") # ログが多すぎる場合はコメントアウト
 
     # ---------------------------------------------------------
     # 2. データの抽出 logic (pred -> body)
@@ -34,12 +38,12 @@ def visualize_npy(args):
         
         # predが辞書で、かつbodyを持っている場合 (確認済みの構造)
         if isinstance(pred_content, dict) and 'body' in pred_content:
-            print("  -> Found structure: ['pred']['body']")
+            # print("  -> Found structure: ['pred']['body']")
             motion_data = pred_content['body']
         
         # predが直接配列の場合
         elif isinstance(pred_content, (np.ndarray, list)):
-             print("  -> Found structure: ['pred'] (direct array)")
+             # print("  -> Found structure: ['pred'] (direct array)")
              motion_data = pred_content
     
     # 'gt' (正解データ) を可視化したい場合のフォールバック
@@ -59,7 +63,8 @@ def visualize_npy(args):
                 break
 
     if motion_data is None:
-        raise ValueError("Could not find motion array in the file.")
+        print(f"Skipping {file_path}: Could not find motion array in the file.")
+        return
 
     # ---------------------------------------------------------
     # 3. 前処理 (型変換・シェイプ調整)
@@ -77,18 +82,18 @@ def visualize_npy(args):
     if motion_tensor.ndim == 2:
         motion_tensor = motion_tensor.unsqueeze(0)
 
-    print(f"  -> Loaded Shape: {motion_tensor.shape}")
+    # print(f"  -> Loaded Shape: {motion_tensor.shape}")
 
     # AvatarGPTの出力 (Batch, 263, Length) を MDM形式 (Batch, Length, 263) に変換
     if motion_tensor.shape[1] == 263:
-        print("  -> Transposing dimensions to (Batch, Length, 263)...")
+        # print("  -> Transposing dimensions to (Batch, Length, 263)...")
         motion_tensor = motion_tensor.permute(0, 2, 1)
 
     # ---------------------------------------------------------
     # 4. 特徴量 -> XYZ座標変換
     # ---------------------------------------------------------
     # ※ここで逆正規化(Un-normalization)は行いません (Rawデータのため)
-    print("Recovering XYZ coordinates from RIC features (Skipping normalization)...")
+    # print("Recovering XYZ coordinates from RIC features (Skipping normalization)...")
     
     n_joints = 22 # HumanML3D standard
     
@@ -106,7 +111,7 @@ def visualize_npy(args):
         # 5. 動画保存
         # ---------------------------------------------------------
         skeleton = paramUtil.t2m_kinematic_chain
-        save_path = args.input_path.replace('.npy', '.mp4')
+        save_path = file_path.replace('.npy', '.mp4')
         
         print(f"Saving animation to: {save_path}")
         
@@ -116,15 +121,46 @@ def visualize_npy(args):
         print("Done.")
         
     except Exception as e:
-        print(f"Error during processing/plotting: {e}")
+        print(f"Error during processing/plotting {file_path}: {e}")
         import traceback
         traceback.print_exc()
 
+def main(args):
+    input_path = args.input_path
+    
+    # 入力パスが存在するか確認
+    if not os.path.exists(input_path):
+        print(f"Error: Path does not exist -> {input_path}")
+        return
+
+    # 1. ディレクトリの場合
+    if os.path.isdir(input_path):
+        print(f"--- Batch Visualization Mode ---")
+        print(f"Target Directory: {input_path}")
+        
+        # フォルダ内の .npy ファイルをすべて取得
+        npy_files = glob.glob(os.path.join(input_path, "*.npy"))
+        
+        if not npy_files:
+            print("No .npy files found in this directory.")
+            return
+            
+        print(f"Found {len(npy_files)} files. Starting processing...\n")
+        
+        for npy_file in npy_files:
+            process_single_file(npy_file)
+            
+    # 2. ファイルの場合
+    elif os.path.isfile(input_path):
+        print(f"--- Single File Visualization Mode ---")
+        process_single_file(input_path)
+        
+    else:
+        print("Invalid input path.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_path", type=str, required=True, help="Path to the input .npy file")
-    # stat_path は不要になったため削除しましたが、互換性のために残す場合は以下のようにします
-    # parser.add_argument("--stat_path", type=str, default='dataset/humanml', help="Unused in Raw mode")
+    parser.add_argument("--input_path", type=str, required=True, help="Path to the input .npy file OR directory containing .npy files")
     args = parser.parse_args()
 
-    visualize_npy(args)
+    main(args)
