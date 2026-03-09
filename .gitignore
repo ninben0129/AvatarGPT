@@ -1,1 +1,7 @@
 UDE-env.tar.gz
+pretrained_models/
+funcs/hml3d/
+demo_inputs/
+demo_outputs/
+evaluation/networks/evaluation/pretrained/
+outputs_archive/
