@@ -15,3 +15,17 @@ python scripts/evaluate.py \
 python check_npy_shape.py --file demo_outputs/demo/output/se1_p0/B0002_T0000.npy
 
 python visualize_npy.py --input_path demo_outputs/demo/output/se1_p0
+
+python scripts/evaluate.py \
+    --task AvatarGPTEvaluator \
+    --config configs/llm_t5/config_t5_large.yaml \
+    --eval_folder demo_outputs \
+    --eval_name demo \
+    --repeat_times 1 \
+    --eval_mode se1 \
+    --eval_pipeline p0 \
+    --topk 1 \
+    --use_semantic_sampling True \
+    --temperature 1.0 \
+    --demo_list demo_inputs/userstudy_list.txt \
+    --demo_data demo_inputs/samples

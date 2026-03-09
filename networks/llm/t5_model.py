@@ -1252,7 +1252,7 @@ class AvatarGPT(nn.Module):
                 max_length=max_num_tokens,
                 num_beams=1,
                 do_sample=True if topk > 1 else False,
-                bad_word_ids=None
+                # bad_word_ids=None
             )                
             pred_strings = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
             pred_tokens = self.convert_motion_string_to_token(m_string=pred_strings)
@@ -1299,7 +1299,7 @@ class AvatarGPT(nn.Module):
                 max_length=max_num_tokens,
                 num_beams=1,
                 do_sample=True if topk > 1 else False,
-                bad_word_ids=None
+                # bad_word_ids=None
             )
             pred_strings = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
             pred_strings = pred_strings[0]
@@ -1404,7 +1404,7 @@ class AvatarGPT(nn.Module):
                 max_length=max_num_tokens,
                 num_beams=1,
                 do_sample=True if topk > 1 else False,
-                bad_word_ids=None
+                # bad_word_ids=None
             )
             pred_strings = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
             pred_tokens = self.convert_motion_string_to_token(m_string=pred_strings)
@@ -1491,7 +1491,7 @@ class AvatarGPT(nn.Module):
             max_length=max_num_tokens,
             num_beams=1,
             do_sample=True if topk > 1 else False,
-            bad_word_ids=None, 
+            # bad_word_ids=None, 
             top_k=topk
         )
         pred_strings = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
